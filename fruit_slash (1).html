@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fruit Slash 🍉</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+  }
+  video {
+    position: absolute;
+    width: 100%;
+    opacity: 0.15;
+    transform: scaleX(-1);
+  }
+  canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  #ui {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<video id="webcam" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById("webcam");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+window.addEventListener("resize", () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+});
+
+let prevPoints = [null, null];
+let currPoints = [null, null];
+let fruits = [];
+let particles = [];
+let score = 0;
+let lives = 3;
+let gameOver = false;
+
+// Trail history for smooth sword effect
+let trails = [[], []];
+
+class Fruit {
+  constructor() {
+    this.x = 80 + Math.random() * (canvas.width - 160);
+    this.y = canvas.height + 60;
+    this.radius = 32 + Math.random() * 18;
+    this.vx = (Math.random() - 0.5) * 4;
+    this.vy = -(9 + Math.random() * 5);
+    this.gravity = 0.18;
+    this.sliced = false;
+    this.slicedTimer = 0;
+    this.slicedAlpha = 1;
+
+    // Random fruit type
+    const types = [
+      { color: "#e74c3c", shine: "#ff8a80", inner: "#c0392b", name: "apple" },
+      { color: "#f39c12", shine: "#ffe082", inner: "#e67e22", name: "orange" },
+      { color: "#2ecc71", shine: "#b9f6ca", inner: "#27ae60", name: "watermelon" },
+      { color: "#9b59b6", shine: "#e1bee7", inner: "#8e44ad", name: "grape" },
+      { color: "#f1c40f", shine: "#fff9c4", inner: "#f39c12", name: "lemon" },
+      { color: "#e91e63", shine: "#fce4ec", inner: "#c2185b", name: "strawberry" },
+    ];
+    const t = types[Math.floor(Math.random() * types.length)];
+    this.color = t.color;
+    this.shine = t.shine;
+    this.inner = t.inner;
+
+    // Half pieces for slice animation
+    this.halfOffset = 0;
+    this.halfVx1 = -2 - Math.random() * 2;
+    this.halfVx2 =  2 + Math.random() * 2;
+    this.halfVy  = -2 - Math.random() * 2;
+  }
+
+  update() {
+    if (!this.sliced) {
+      this.vy += this.gravity;
+      this.x += this.vx;
+      this.y += this.vy;
+    } else {
+      this.slicedTimer++;
+      this.slicedAlpha = Math.max(0, 1 - this.slicedTimer / 28);
+      this.halfOffset += 3;
+    }
+  }
+
+  draw() {
+    if (!this.sliced) {
+      // Shadow
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(this.x, this.y + this.radius - 4, this.radius * 0.8, 8, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fill();
+      ctx.restore();
+
+      // Main fruit body
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+
+      // Inner circle (fruit flesh feel)
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius * 0.72, 0, Math.PI * 2);
+      ctx.fillStyle = this.inner;
+      ctx.globalAlpha = 0.35;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Shine highlight
+      ctx.beginPath();
+      ctx.arc(this.x - this.radius * 0.28, this.y - this.radius * 0.28, this.radius * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = this.shine;
+      ctx.globalAlpha = 0.55;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+    } else {
+      // Draw two halves flying apart
+      if (this.slicedAlpha <= 0) return;
+      ctx.globalAlpha = this.slicedAlpha;
+
+      const off = this.halfOffset;
+
+      // Left half
+      ctx.save();
+      ctx.translate(this.x + this.halfVx1 * off, this.y + this.halfVy * off + off * 0.5);
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, Math.PI / 2, Math.PI * 3 / 2);
+      ctx.closePath();
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      // inner flesh
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius * 0.72, Math.PI / 2, Math.PI * 3 / 2);
+      ctx.closePath();
+      ctx.fillStyle = this.inner;
+      ctx.globalAlpha = 0.5 * this.slicedAlpha;
+      ctx.fill();
+      ctx.globalAlpha = this.slicedAlpha;
+      ctx.restore();
+
+      // Right half
+      ctx.save();
+      ctx.translate(this.x + this.halfVx2 * off, this.y + this.halfVy * off + off * 0.5);
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, -Math.PI / 2, Math.PI / 2);
+      ctx.closePath();
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius * 0.72, -Math.PI / 2, Math.PI / 2);
+      ctx.closePath();
+      ctx.fillStyle = this.inner;
+      ctx.globalAlpha = 0.5 * this.slicedAlpha;
+      ctx.fill();
+      ctx.globalAlpha = this.slicedAlpha;
+      ctx.restore();
+
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  isOffScreen() {
+    return this.y > canvas.height + 150 || this.x < -150 || this.x > canvas.width + 150;
+  }
+}
+
+// Juice particle
+class Particle {
+  constructor(x, y, color) {
+    this.x = x;
+    this.y = y;
+    this.color = color;
+    this.vx = (Math.random() - 0.5) * 10;
+    this.vy = (Math.random() - 0.5) * 10 - 3;
+    this.life = 1;
+    this.radius = 3 + Math.random() * 5;
+  }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.vy += 0.3;
+    this.life -= 0.04;
+  }
+  draw() {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.globalAlpha = this.life;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Line-circle intersection
+function lineCircle(p1, p2, cx, cy, r) {
+  if (!p1 || !p2) return false;
+  const [x1, y1] = p1;
+  const [x2, y2] = p2;
+  const dx = x2 - x1, dy = y2 - y1;
+  const fx = x1 - cx, fy = y1 - cy;
+  const a = dx*dx + dy*dy;
+  if (a === 0) return false;
+  const b = 2*(fx*dx + fy*dy);
+  const c = fx*fx + fy*fy - r*r;
+  let d = b*b - 4*a*c;
+  if (d < 0) return false;
+  d = Math.sqrt(d);
+  const t1 = (-b - d)/(2*a);
+  const t2 = (-b + d)/(2*a);
+  return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1);
+}
+
+function drawLives() {
+  ctx.font = "bold 26px Arial";
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i < lives ? "#e74c3c" : "rgba(255,255,255,0.2)";
+    ctx.fillText("♥", canvas.width - 44 - i * 36, 40);
+  }
+}
+
+function drawScore() {
+  ctx.fillStyle = "white";
+  ctx.font = "bold 30px Arial";
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 8;
+  ctx.fillText("Score: " + score, 20, 44);
+  ctx.shadowBlur = 0;
+}
+
+function drawGameOver() {
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "white";
+  ctx.font = "bold 64px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", canvas.width/2, canvas.height/2 - 30);
+  ctx.font = "32px Arial";
+  ctx.fillText("Score: " + score, canvas.width/2, canvas.height/2 + 30);
+  ctx.font = "20px Arial";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("Reload to play again", canvas.width/2, canvas.height/2 + 75);
+  ctx.textAlign = "left";
+}
+
+let spawnInterval = 80;
+let frameCount = 0;
+
+function gameLoop() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (gameOver) {
+    drawGameOver();
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  frameCount++;
+
+  // Spawn fruits
+  spawnInterval = Math.max(35, 80 - Math.floor(score / 5) * 4);
+  if (frameCount % spawnInterval === 0) {
+    fruits.push(new Fruit());
+  }
+
+  // Update & draw fruits
+  fruits.forEach(fruit => {
+    fruit.update();
+    fruit.draw();
+
+    if (!fruit.sliced) {
+      for (let i = 0; i < 2; i++) {
+        if (lineCircle(prevPoints[i], currPoints[i], fruit.x, fruit.y, fruit.radius + 10)) {
+          fruit.sliced = true;
+          score++;
+          // Spawn juice particles
+          for (let p = 0; p < 12; p++) {
+            particles.push(new Particle(fruit.x, fruit.y, fruit.color));
+          }
+        }
+      }
+    }
+  });
+
+  // Remove fruits that fell without being sliced → lose a life
+  fruits.forEach(f => {
+    if (!f.sliced && f.isOffScreen()) {
+      lives--;
+      if (lives <= 0) gameOver = true;
+    }
+  });
+
+  // Remove off-screen & fully faded sliced fruits
+  fruits = fruits.filter(f => {
+    if (f.sliced) return f.slicedAlpha > 0;
+    return !f.isOffScreen();
+  });
+
+  // Particles
+  particles.forEach(p => { p.update(); p.draw(); });
+  particles = particles.filter(p => p.life > 0);
+
+  // Draw sword trails
+  for (let i = 0; i < 2; i++) {
+    if (currPoints[i]) {
+      trails[i].push([...currPoints[i]]);
+      if (trails[i].length > 12) trails[i].shift();
+    } else {
+      trails[i] = [];
+    }
+
+    if (trails[i].length > 1) {
+      for (let t = 1; t < trails[i].length; t++) {
+        const alpha = t / trails[i].length;
+        const width = alpha * 5;
+        ctx.beginPath();
+        ctx.moveTo(trails[i][t-1][0], trails[i][t-1][1]);
+        ctx.lineTo(trails[i][t][0], trails[i][t][1]);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.85})`;
+        ctx.lineWidth = width;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
+
+      // White glow dot at tip
+      const tip = trails[i][trails[i].length - 1];
+      ctx.beginPath();
+      ctx.arc(tip[0], tip[1], 6, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fill();
+    }
+  }
+
+  drawScore();
+  drawLives();
+
+  requestAnimationFrame(gameLoop);
+}
+
+// MediaPipe Hands
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.6,
+  modelComplexity: 1
+});
+
+hands.onResults(results => {
+  // ✅ FIX 2: update prevPoints HERE before overwriting currPoints
+  prevPoints = currPoints.map(p => p ? [...p] : null);
+  currPoints = [null, null];
+
+  if (results.multiHandLandmarks) {
+    results.multiHandLandmarks.forEach((landmarks, i) => {
+      if (i >= 2) return;
+
+      // ✅ FIX 1: flip X to mirror webcam
+      let x = (1 - landmarks[8].x) * canvas.width;
+      let y = landmarks[8].y * canvas.height;
+
+      // Smoothing
+      if (prevPoints[i]) {
+        x = x * 0.6 + prevPoints[i][0] * 0.4;
+        y = y * 0.6 + prevPoints[i][1] * 0.4;
+      }
+
+      currPoints[i] = [x, y];
+    });
+  }
+});
+
+// Start camera
+const camera = new Camera(video, {
+  onFrame: async () => {
+    await hands.send({ image: video });
+  },
+  width: 640,
+  height: 480
+});
+
+camera.start();
+gameLoop();
+</script>
+</body>
+</html>
